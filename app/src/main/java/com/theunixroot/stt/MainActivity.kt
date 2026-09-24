@@ -21,7 +21,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,15 +40,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
-                    primary = Color(0xFFF38BA8),
-                    onPrimary = Color(0xFF11111B),
-                    secondary = Color(0xFF89B4FA),
-                    surface = Color(0xFF1E1E2E),
-                    onSurface = Color(0xFFCDD6F4),
-                    surfaceVariant = Color(0xFF313244),
-                    onSurfaceVariant = Color(0xFFA6ADC8),
-                    background = Color(0xFF181825),
-                    onBackground = Color(0xFFCDD6F4)
+                    primary = Color(0xFF00E5FF),
+                    onPrimary = Color(0xFF0B0E14),
+                    secondary = Color(0xFFFF5277),
+                    surface = Color(0xFF161922),
+                    onSurface = Color(0xFFEDEBF5),
+                    surfaceVariant = Color(0xFF242938),
+                    onSurfaceVariant = Color(0xFFA5ACBD),
+                    background = Color(0xFF0D0F17),
+                    onBackground = Color(0xFFEDEBF5)
                 )
             ) {
                 MainSettingsScreen(
@@ -68,7 +67,7 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(serviceIntent)
         }
-        finish() // Minimiza la app al lanzar la burbuja flotante
+        finish()
     }
 }
 
@@ -91,6 +90,10 @@ fun MainSettingsScreen(
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         )
+    }
+
+    val isAccessibilityEnabled = remember {
+        mutableStateOf(STTAccessibilityService.instance != null)
     }
 
     val micLauncher = rememberLauncherForActivityResult(
@@ -122,15 +125,15 @@ fun MainSettingsScreen(
                 text = "Cloudflare STT Bubble",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.secondary
+                color = MaterialTheme.colorScheme.primary
             )
             Text(
-                text = "Burbuja flotante interactiva estilo Google Maps",
+                text = "Toca para hablar, inyecta en el campo activo",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             // Permisos
             Card(
@@ -152,14 +155,21 @@ fun MainSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = "Superposición (burbuja en pantalla)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Burbuja Flotante",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Mostrar sobre otras aplicaciones",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (hasOverlayPermission) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFA6E3A1))
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF00E676))
                         } else {
                             Button(
                                 onClick = {
@@ -173,12 +183,12 @@ fun MainSettingsScreen(
                                 },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text("Conceder", fontSize = 12.sp)
+                                Text("Activar", fontSize = 12.sp)
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Permiso Micrófono
                     Row(
@@ -186,20 +196,66 @@ fun MainSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = "Acceso a Micrófono",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Micrófono",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Para grabar tu voz en alta definición",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (hasMicPermission) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFFA6E3A1))
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF00E676))
                         } else {
                             Button(
                                 onClick = { micLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text("Conceder", fontSize = 12.sp)
+                                Text("Activar", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Permiso Accesibilidad (para auto-inyección)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Auto-Inyección de Texto",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Accesibilidad (escribe en cualquier app)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (isAccessibilityEnabled.value || STTAccessibilityService.instance != null) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF00E676))
+                        } else {
+                            Button(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(intent)
+                                },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) {
+                                Text("Activar", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSecondary)
                             }
                         }
                     }
@@ -241,7 +297,7 @@ fun MainSettingsScreen(
                             apiToken = it
                             prefs.edit().putString("api_token", it).apply()
                         },
-                        label = { Text("API Token (Bearer)") },
+                        label = { Text("API Token (Workers AI)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -254,7 +310,7 @@ fun MainSettingsScreen(
                             model = it
                             prefs.edit().putString("model", it).apply()
                         },
-                        label = { Text("Modelo de IA") },
+                        label = { Text("Modelo (@cf/openai/whisper)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -289,7 +345,7 @@ fun MainSettingsScreen(
                 Icon(Icons.Default.BubbleChart, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    "Abrir Burbuja Flotante",
+                    "Iniciar Burbuja Flotante",
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onPrimary
                 )

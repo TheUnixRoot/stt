@@ -13,22 +13,20 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -68,7 +66,6 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
@@ -94,7 +91,8 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
     private val errorMessage = mutableStateOf("")
 
     private lateinit var windowParams: WindowManager.LayoutParams
-    private val handler = Handler(Looper.getMainLooper())
+    private var bubbleSavedX = 50
+    private var bubbleSavedY = 300
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -131,7 +129,7 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
             Notification.Builder(this)
         }.apply {
             setContentTitle("Burbuja STT activa")
-            setContentText("Toca la burbuja en pantalla para dictar")
+            setContentText("Toca para dictar e inyectar | Mantén pulsado para abrir panel")
             setSmallIcon(R.mipmap.ic_launcher)
             addAction(Notification.Action.Builder(null, "Cerrar burbuja", pStopIntent).build())
             setOngoing(true)
@@ -164,8 +162,8 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 40
-            y = 300
+            x = bubbleSavedX
+            y = bubbleSavedY
         }
 
         bubbleComposeView = ComposeView(this).apply {
@@ -176,15 +174,15 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
             setContent {
                 MaterialTheme(
                     colorScheme = darkColorScheme(
-                        primary = Color(0xFFF38BA8),
-                        onPrimary = Color(0xFF11111B),
-                        secondary = Color(0xFF89B4FA),
-                        surface = Color(0xFF1E1E2E),
-                        onSurface = Color(0xFFCDD6F4),
-                        surfaceVariant = Color(0xFF313244),
-                        onSurfaceVariant = Color(0xFFA6ADC8),
-                        background = Color(0xFF181825),
-                        onBackground = Color(0xFFCDD6F4)
+                        primary = Color(0xFF00E5FF),
+                        onPrimary = Color(0xFF0B0E14),
+                        secondary = Color(0xFFFF5277),
+                        surface = Color(0xFF161922),
+                        onSurface = Color(0xFFEDEBF5),
+                        surfaceVariant = Color(0xFF242938),
+                        onSurfaceVariant = Color(0xFFA5ACBD),
+                        background = Color(0xFF0D0F17),
+                        onBackground = Color(0xFFEDEBF5)
                     )
                 ) {
                     BubbleOverlayContent(
@@ -192,31 +190,39 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
                         state = sttState.value,
                         text = transcribedText.value,
                         error = errorMessage.value,
-                        onBubbleClick = {
-                            if (!isExpanded.value) {
-                                isExpanded.value = true
-                                updateWindowFocus(true)
-                            } else {
-                                handleMicClick()
+                        onBubbleShortPress = {
+                            if (sttState.value == SttState.RECORDING) {
+                                stopAndTranscribe()
+                            } else if (sttState.value != SttState.TRANSCRIBING) {
+                                startAudioRecording()
                             }
+                        },
+                        onBubbleLongPress = {
+                            vibrate(50)
+                            expandPanel()
                         },
                         onBubbleDrag = { dx, dy ->
-                            windowParams.x += dx.toInt()
-                            windowParams.y += dy.toInt()
-                            windowManager?.updateViewLayout(this, windowParams)
+                            if (!isExpanded.value) {
+                                windowParams.x += dx.toInt()
+                                windowParams.y += dy.toInt()
+                                bubbleSavedX = windowParams.x
+                                bubbleSavedY = windowParams.y
+                                clampBubblePosition()
+                                windowManager?.updateViewLayout(this, windowParams)
+                            }
                         },
                         onCollapse = {
-                            if (sttState.value == SttState.RECORDING) {
-                                recorderHelper.startRecording() // safety cancel
-                            }
-                            isExpanded.value = false
-                            updateWindowFocus(false)
+                            collapsePanel()
                         },
                         onCloseApp = {
                             stopSelf()
                         },
                         onActionMic = {
-                            handleMicClick()
+                            if (sttState.value == SttState.RECORDING) {
+                                stopAndTranscribe()
+                            } else {
+                                startAudioRecording()
+                            }
                         }
                     )
                 }
@@ -226,23 +232,56 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
         windowManager?.addView(bubbleComposeView, windowParams)
     }
 
-    private fun updateWindowFocus(focusable: Boolean) {
-        if (focusable) {
-            windowParams.flags = windowParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-        } else {
-            windowParams.flags = windowParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        }
+    private fun clampBubblePosition() {
+        val dm = resources.displayMetrics
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
+        val bubbleSize = (70 * dm.density).toInt()
+
+        windowParams.x = windowParams.x.coerceIn(0, (screenW - bubbleSize).coerceAtLeast(0))
+        windowParams.y = windowParams.y.coerceIn(50, (screenH - bubbleSize - 50).coerceAtLeast(50))
+    }
+
+    private fun expandPanel() {
+        isExpanded.value = true
+        // Center the panel on screen so it never overflows off-screen
+        windowParams.gravity = Gravity.CENTER
+        windowParams.x = 0
+        windowParams.y = 0
+        windowParams.flags = windowParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        windowParams.flags = windowParams.flags and WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS.inv()
         windowManager?.updateViewLayout(bubbleComposeView, windowParams)
     }
 
-    private fun handleMicClick() {
+    private fun collapsePanel() {
+        isExpanded.value = false
+        // Restore bubble to saved coordinates
+        windowParams.gravity = Gravity.TOP or Gravity.START
+        windowParams.x = bubbleSavedX
+        windowParams.y = bubbleSavedY
+        clampBubblePosition()
+        windowParams.flags = windowParams.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        windowParams.flags = windowParams.flags or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        windowManager?.updateViewLayout(bubbleComposeView, windowParams)
+    }
+
+    private fun vibrate(millis: Long) {
+        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.vibrate(VibrationEffect.createOneShot(millis, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.vibrate(millis)
+        }
+    }
+
+    private fun startAudioRecording() {
         val prefs = getSharedPreferences("cf_stt_prefs", Context.MODE_PRIVATE)
         val accountId = prefs.getString("account_id", "") ?: ""
         val apiToken = prefs.getString("api_token", "") ?: ""
-        val model = prefs.getString("model", "@cf/openai/whisper") ?: "@cf/openai/whisper"
 
         if (accountId.isBlank() || apiToken.isBlank()) {
-            Toast.makeText(this, "Abre la app para configurar tu Token de Cloudflare", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Configura primero tu Token de Cloudflare en la App", Toast.LENGTH_LONG).show()
             val mainIntent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
@@ -250,50 +289,64 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
             return
         }
 
-        when (sttState.value) {
-            SttState.RECORDING -> {
-                sttState.value = SttState.TRANSCRIBING
-                serviceScope.launch {
-                    val wav = recorderHelper.stopAndGetWav()
-                    if (wav.isEmpty()) {
-                        errorMessage.value = "No se capturó audio"
-                        sttState.value = SttState.ERROR
-                        return@launch
-                    }
+        val started = recorderHelper.startRecording()
+        if (started) {
+            vibrate(40)
+            sttState.value = SttState.RECORDING
+            errorMessage.value = ""
+        } else {
+            errorMessage.value = "Error al iniciar micrófono"
+            sttState.value = SttState.ERROR
+        }
+    }
 
-                    val res = CloudflareSttService.transcribeAudio(
-                        accountId = accountId.trim(),
-                        apiToken = apiToken.trim(),
-                        audioBytes = wav,
-                        model = model.trim()
-                    )
+    private fun stopAndTranscribe() {
+        vibrate(30)
+        sttState.value = SttState.TRANSCRIBING
 
-                    res.onSuccess { resultText ->
-                        transcribedText.value = resultText
-                        sttState.value = SttState.SUCCESS
-                        if (resultText.isNotBlank()) {
-                            val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            cb.setPrimaryClip(ClipData.newPlainText("Cloudflare STT", resultText))
-                            Toast.makeText(this@FloatingBubbleService, "¡Copiado al portapapeles!", Toast.LENGTH_SHORT).show()
-                        }
-                    }.onFailure { ex ->
-                        errorMessage.value = ex.localizedMessage ?: "Error de transcripción"
-                        sttState.value = SttState.ERROR
+        val prefs = getSharedPreferences("cf_stt_prefs", Context.MODE_PRIVATE)
+        val accountId = prefs.getString("account_id", "") ?: ""
+        val apiToken = prefs.getString("api_token", "") ?: ""
+        val model = prefs.getString("model", "@cf/openai/whisper") ?: "@cf/openai/whisper"
+
+        serviceScope.launch {
+            val wav = recorderHelper.stopAndGetWav()
+            if (wav.isEmpty()) {
+                errorMessage.value = "Audio vacío"
+                sttState.value = SttState.ERROR
+                return@launch
+            }
+
+            val res = CloudflareSttService.transcribeAudio(
+                accountId = accountId.trim(),
+                apiToken = apiToken.trim(),
+                audioBytes = wav,
+                model = model.trim()
+            )
+
+            res.onSuccess { resultText ->
+                transcribedText.value = resultText
+                sttState.value = SttState.SUCCESS
+                vibrate(60)
+
+                if (resultText.isNotBlank()) {
+                    // Inject into active input
+                    val injected = STTAccessibilityService.injectTextIntoFocusedInput(resultText)
+
+                    // Also always copy to clipboard
+                    val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cb.setPrimaryClip(ClipData.newPlainText("Cloudflare STT", resultText))
+
+                    if (injected) {
+                        Toast.makeText(this@FloatingBubbleService, "¡Texto inyectado!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@FloatingBubbleService, "Copiado al portapapeles", Toast.LENGTH_SHORT).show()
                     }
                 }
-            }
-            SttState.TRANSCRIBING -> {
-                // busy
-            }
-            else -> {
-                val ok = recorderHelper.startRecording()
-                if (ok) {
-                    sttState.value = SttState.RECORDING
-                    errorMessage.value = ""
-                } else {
-                    errorMessage.value = "No se pudo iniciar el micrófono"
-                    sttState.value = SttState.ERROR
-                }
+            }.onFailure { ex ->
+                errorMessage.value = ex.localizedMessage ?: "Error de transcripción"
+                sttState.value = SttState.ERROR
+                vibrate(120)
             }
         }
     }
@@ -323,13 +376,15 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun BubbleOverlayContent(
     expanded: Boolean,
     state: SttState,
     text: String,
     error: String,
-    onBubbleClick: () -> Unit,
+    onBubbleShortPress: () -> Unit,
+    onBubbleLongPress: () -> Unit,
     onBubbleDrag: (Float, Float) -> Unit,
     onCollapse: () -> Unit,
     onCloseApp: () -> Unit,
@@ -352,47 +407,51 @@ fun BubbleOverlayContent(
 
         Box(
             modifier = Modifier
-                .size(64.dp)
+                .size(68.dp)
                 .pointerInput(Unit) {
                     detectDragGestures { change, dragAmount ->
                         change.consume()
                         onBubbleDrag(dragAmount.x, dragAmount.y)
                     }
                 }
-                .clickable { onBubbleClick() },
+                .combinedClickable(
+                    onClick = onBubbleShortPress,
+                    onLongClick = onBubbleLongPress
+                ),
             contentAlignment = Alignment.Center
         ) {
             if (state == SttState.RECORDING) {
                 Box(
                     modifier = Modifier
-                        .size(64.dp)
+                        .size(66.dp)
                         .scale(pulseScale)
-                        .background(Color(0xFFF38BA8).copy(alpha = 0.4f), CircleShape)
+                        .background(Color(0xFFFF5277).copy(alpha = 0.45f), CircleShape)
                 )
             }
 
             Surface(
-                modifier = Modifier.size(54.dp),
+                modifier = Modifier.size(56.dp),
                 shape = CircleShape,
                 color = when (state) {
-                    SttState.RECORDING -> Color(0xFFF38BA8)
-                    SttState.TRANSCRIBING -> Color(0xFFFAB387)
-                    else -> Color(0xFF89B4FA)
+                    SttState.RECORDING -> Color(0xFFFF5277)
+                    SttState.TRANSCRIBING -> Color(0xFFFFB300)
+                    SttState.SUCCESS -> Color(0xFF00E676)
+                    else -> Color(0xFF00E5FF)
                 },
-                shadowElevation = 8.dp
+                shadowElevation = 10.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     if (state == SttState.TRANSCRIBING) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = Color(0xFF11111B),
-                            strokeWidth = 2.5.dp
+                            modifier = Modifier.size(26.dp),
+                            color = Color(0xFF0B0E14),
+                            strokeWidth = 3.dp
                         )
                     } else {
                         Icon(
                             imageVector = if (state == SttState.RECORDING) Icons.Default.Stop else Icons.Default.Mic,
                             contentDescription = "STT Bubble",
-                            tint = Color(0xFF11111B),
+                            tint = Color(0xFF0B0E14),
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -400,32 +459,26 @@ fun BubbleOverlayContent(
             }
         }
     } else {
-        // Expanded Panel
+        // Expanded Panel: centered, bounded, responsive
         Card(
             modifier = Modifier
-                .width(320.dp)
+                .widthIn(max = 330.dp)
+                .fillMaxWidth(0.9f)
                 .wrapContentHeight()
                 .padding(8.dp)
-                .shadow(12.dp, RoundedCornerShape(24.dp)),
-            shape = RoundedCornerShape(24.dp),
+                .shadow(16.dp, RoundedCornerShape(26.dp)),
+            shape = RoundedCornerShape(26.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Header with drag & close
+                // Header
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .pointerInput(Unit) {
-                            detectDragGestures { change, dragAmount ->
-                                change.consume()
-                                onBubbleDrag(dragAmount.x, dragAmount.y)
-                            }
-                        },
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -434,7 +487,12 @@ fun BubbleOverlayContent(
                             modifier = Modifier
                                 .size(10.dp)
                                 .background(
-                                    if (state == SttState.RECORDING) Color(0xFFF38BA8) else Color(0xFFA6E3A1),
+                                    when (state) {
+                                        SttState.RECORDING -> Color(0xFFFF5277)
+                                        SttState.TRANSCRIBING -> Color(0xFFFFB300)
+                                        SttState.SUCCESS -> Color(0xFF00E676)
+                                        else -> Color(0xFF00E5FF)
+                                    },
                                     CircleShape
                                 )
                         )
@@ -442,15 +500,13 @@ fun BubbleOverlayContent(
                         Text(
                             text = "Cloudflare STT",
                             fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleSmall,
+                            style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
 
-                    Row {
-                        IconButton(onClick = onCollapse, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Minimizar", modifier = Modifier.size(18.dp))
-                        }
+                    IconButton(onClick = onCollapse, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Minimizar", modifier = Modifier.size(20.dp))
                     }
                 }
 
@@ -459,74 +515,75 @@ fun BubbleOverlayContent(
                 // Big action Mic Button
                 FilledIconButton(
                     onClick = onActionMic,
-                    modifier = Modifier.size(68.dp),
+                    modifier = Modifier.size(72.dp),
                     shape = CircleShape,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = when (state) {
-                            SttState.RECORDING -> Color(0xFFF38BA8)
-                            SttState.TRANSCRIBING -> Color(0xFFFAB387)
-                            else -> Color(0xFF89B4FA)
+                            SttState.RECORDING -> Color(0xFFFF5277)
+                            SttState.TRANSCRIBING -> Color(0xFFFFB300)
+                            SttState.SUCCESS -> Color(0xFF00E676)
+                            else -> Color(0xFF00E5FF)
                         },
-                        contentColor = Color(0xFF11111B)
+                        contentColor = Color(0xFF0B0E14)
                     ),
                     enabled = state != SttState.TRANSCRIBING
                 ) {
                     if (state == SttState.TRANSCRIBING) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(28.dp),
-                            color = Color(0xFF11111B),
+                            modifier = Modifier.size(30.dp),
+                            color = Color(0xFF0B0E14),
                             strokeWidth = 3.dp
                         )
                     } else {
                         Icon(
                             imageVector = if (state == SttState.RECORDING) Icons.Default.Stop else Icons.Default.Mic,
                             contentDescription = "Grabar",
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(36.dp)
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
                     text = when (state) {
                         SttState.IDLE -> "Toca para dictar"
-                        SttState.RECORDING -> "Grabando... Toca para enviar"
+                        SttState.RECORDING -> "Escuchando... Toca para finalizar"
                         SttState.TRANSCRIBING -> "Transcribiendo con Cloudflare..."
-                        SttState.SUCCESS -> "Listo (copiado al portapapeles)"
+                        SttState.SUCCESS -> "Listo (inyectado / copiado)"
                         SttState.ERROR -> "Error"
                     },
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = when (state) {
-                        SttState.ERROR -> Color(0xFFF38BA8)
-                        SttState.SUCCESS -> Color(0xFFA6E3A1)
+                        SttState.ERROR -> Color(0xFFFF5277)
+                        SttState.SUCCESS -> Color(0xFF00E676)
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     textAlign = TextAlign.Center
                 )
 
                 if (state == SttState.ERROR && error.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = error,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFF38BA8),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFFF5277),
                         textAlign = TextAlign.Center
                     )
                 }
 
                 if (text.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 140.dp)
+                            .heightIn(max = 150.dp)
                     ) {
                         Column(
                             modifier = Modifier
-                                .padding(10.dp)
+                                .padding(12.dp)
                                 .verticalScroll(rememberScrollState())
                         ) {
                             Text(
@@ -537,7 +594,7 @@ fun BubbleOverlayContent(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -549,11 +606,11 @@ fun BubbleOverlayContent(
                                 cb.setPrimaryClip(ClipData.newPlainText("STT", text))
                                 Toast.makeText(context, "Copiado", Toast.LENGTH_SHORT).show()
                             },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
                         ) {
                             Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Copiar", fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Copiar", fontSize = 13.sp)
                         }
 
                         Button(
@@ -568,25 +625,20 @@ fun BubbleOverlayContent(
                                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                                 })
                             },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Compartir", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Compartir", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    TextButton(onClick = onCloseApp) {
-                        Text("Cerrar burbuja flotante", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                    }
+                TextButton(onClick = onCloseApp) {
+                    Text("Cerrar burbuja flotante", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 }
             }
         }
