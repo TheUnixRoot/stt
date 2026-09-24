@@ -167,6 +167,7 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
         }
 
         bubbleComposeView = ComposeView(this).apply {
+            setViewCompositionStrategy(androidx.compose.ui.platform.ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool)
             setViewTreeLifecycleOwner(this@FloatingBubbleService)
             setViewTreeViewModelStoreOwner(this@FloatingBubbleService)
             setViewTreeSavedStateRegistryOwner(this@FloatingBubbleService)
@@ -229,7 +230,11 @@ class FloatingBubbleService : Service(), LifecycleOwner, ViewModelStoreOwner, Sa
             }
         }
 
-        windowManager?.addView(bubbleComposeView, windowParams)
+        try {
+            windowManager?.addView(bubbleComposeView, windowParams)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error al mostrar superposición: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun clampBubblePosition() {

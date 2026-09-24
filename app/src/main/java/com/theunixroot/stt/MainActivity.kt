@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(serviceIntent)
         }
-        finish()
+        Toast.makeText(this, "Burbuja flotante iniciada en pantalla", Toast.LENGTH_SHORT).show()
     }
 }
 
